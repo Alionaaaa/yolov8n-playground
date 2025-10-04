@@ -7,18 +7,73 @@
 import argparse
 import time
 import cv2
+import numpy as np
 from ultralytics import YOLO
+
+import ocsort_module
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--source', type=str, default='../media/test.png')
     return parser.parse_args()
 
+def yolo_to_ocsort_format(yolo_boxes):
+    """Convert YOLOv8 boxes to OCSort format: [x1, y1, x2, y2, confidence, class]."""
+    if len(yolo_boxes) == 0:
+        return np.empty((0, 6), dtype=np.float32)
+    boxes = []
+    for box in yolo_boxes:
+        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+        conf = float(box.conf[0].cpu().numpy())
+        cls = float(box.cls[0].cpu().numpy())
+        boxes.append([x1, y1, x2, y2, conf, cls])
+    return np.array(boxes, dtype=np.float32)
+            
+def draw_all(image, tracks, names):
+    color = (0, 255, 0)
+    thickness = 2
+    font = cv2.FONT_HERSHEY_SIMPLEX
+
+    for trk in tracks:
+
+        x1, y1, x2, y2 = map(int, trk[:4])
+        track_id = int(trk[4])
+        class_id = int(trk[5])
+        track_conf = float(trk[6])
+        cls_name = names[class_id] if class_id in names else str(class_id)
+
+        cv2.rectangle(image, (x1, y1), (x2, y2), color, thickness)
+
+        line1 = f"ID:{track_id} Conf:{track_conf:.2f}"
+        line2 = f"{cls_name}"
+
+        y_text = y1 - 10
+        for line in [line1, line2]:
+            (w, h), _ = cv2.getTextSize(line, font, 0.5, 1)
+            cv2.rectangle(image, (x1, y_text - h - 2), (x1 + w + 2, y_text + 2), color, -1)
+            cv2.putText(image, line, (x1 + 1, y_text), font, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
+            y_text -= (h + 4)
+
+    return image
+
+
 def main():
     args = parse_args()
 
     model = YOLO("../models/yolov8n.pt")
-    print("Model loaded. Starting inference... (press ESC to exit)")
+    names = model.names
+    tracker = ocsort_module.OCSort(
+        det_thresh=0.2,      # порог уверенности детекции
+        max_age=30,          # максимальное количество кадров без обновления
+        min_hits=3,          # минимальное количество попаданий для инициализации трека
+        iou_threshold=0.3,   # порог IoU для ассоциации
+        delta_t=3,           # 
+        asso_func="iou",     # функция ассоциации
+        inertia=0.2,         # инерция
+        use_byte=False       # использовать ByteTrack или нет
+    )
+
+    print("Model and tracker loaded. Starting inference... (press ESC to exit)")
 
 
     if args.source.endswith(('.png', '.jpg', '.jpeg')):
@@ -30,10 +85,13 @@ def main():
         results = model.predict(image, imgsz=640, conf=0.6, device="cpu", verbose=True)
         t1 = time.time()
         
-        print(f"PREDICT: {((t1 - t0) * 1000):.1f}ms, Objects: {len(results[0].boxes)}")
-        
-        annotated = results[0].plot()
-        cv2.imshow("YOLOv8n Inference", annotated)
+        tracks = tracker.update(yolo_to_ocsort_format(results[0].boxes))
+        t2 = time.time()
+
+        print(f"PREDICT: {((t1 - t0) * 1000):.1f}ms, Objects: {len(results[0].boxes)}, Tracks: {len(tracks)}")
+
+        image = draw_all(image, tracks, names)
+        cv2.imshow("YOLOv8n Inference", image)
         cv2.waitKey(0)
         cv2.destroyAllWindows()
         return
@@ -58,31 +116,34 @@ def main():
 
         # run inference
         t0 = time.time()
-        results = model.predict(frame, imgsz=640, conf=0.6, device="cpu", verbose=True)
+        results = model.predict(frame, imgsz=640, conf=0.4, device="cpu", verbose=True)
         t1 = time.time()
 
-        r = results[0]
-        annotated = r.plot()
+        tracks = tracker.update(yolo_to_ocsort_format(results[0].boxes)) 
+        t2 = time.time()
 
         # compute FPS and inference time
         current_time = time.time()
         fps_frame = 1.0 / (current_time - prev_time) if (current_time - prev_time) > 0 else 0
         prev_time = current_time
         avg_fps = 0.9 * avg_fps + 0.1 * fps_frame if avg_fps else fps_frame
-
         predict_ms = (t1 - t0) * 1000
-        cv2.putText(annotated, f"FPS:{avg_fps:.1f} PREDICT:{predict_ms:.1f}ms",
-                    (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        track_ms = (t2 - t1) * 1000
         
-        print(f"FPS: {avg_fps:.1f}, PREDICT: {predict_ms:.1f}ms, Objects: {len(r.boxes)}")
+        info_text = f"FPS:{avg_fps:.1f} PREDICT:{predict_ms:.1f}ms TRACK:{track_ms:.1f}ms"
+        print(info_text)
 
-        cv2.imshow("YOLOv8n Inference", annotated)
+        frame = draw_all(frame, tracks, names)
+        cv2.putText(frame, info_text,
+                    (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        cv2.imshow("YOLOv8n + OCSort Tracking", frame)
+
         if cv2.waitKey(1) & 0xFF == 27:  # ESC key
             break
 
     cap.release()
     cv2.destroyAllWindows()
-    print("Inference finished.")
+    print("Tracking finished.")
 
 if __name__ == "__main__":
     main()
