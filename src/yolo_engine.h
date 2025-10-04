@@ -44,6 +44,21 @@ public:
     Results process(const cv::Mat& image);
     cv::Mat visualize(const cv::Mat& image, const std::vector<Detection>& detections);
 
+    // Class names
+    const std::vector<std::string> class_names_ = {
+        "person","bicycle","car","motorcycle","airplane","bus","train","truck",
+        "boat","traffic light","fire hydrant","stop sign","parking meter","bench",
+        "bird","cat","dog","horse","sheep","cow","elephant","bear","zebra","giraffe",
+        "backpack","umbrella","handbag","tie","suitcase","frisbee","skis","snowboard",
+        "sports ball","kite","baseball bat","baseball glove","skateboard","surfboard",
+        "tennis racket","bottle","wine glass","cup","fork","knife","spoon","bowl",
+        "banana","apple","sandwich","orange","broccoli","carrot","hot dog","pizza",
+        "donut","cake","chair","couch","potted plant","bed","dining table","toilet",
+        "tv","laptop","mouse","remote","keyboard","cell phone","microwave","oven",
+        "toaster","sink","refrigerator","book","clock","vase","scissors","teddy bear",
+        "hair drier","toothbrush"
+    };
+
 private:
     // ONNX Runtime
     std::unique_ptr<Ort::Env> env_;
@@ -65,22 +80,6 @@ private:
     int num_classes_;
     int output_numprob_;
     int output_numbox_;
-    
-
-    // Class names
-    const std::vector<std::string> class_names_ = {
-        "person","bicycle","car","motorcycle","airplane","bus","train","truck",
-        "boat","traffic light","fire hydrant","stop sign","parking meter","bench",
-        "bird","cat","dog","horse","sheep","cow","elephant","bear","zebra","giraffe",
-        "backpack","umbrella","handbag","tie","suitcase","frisbee","skis","snowboard",
-        "sports ball","kite","baseball bat","baseball glove","skateboard","surfboard",
-        "tennis racket","bottle","wine glass","cup","fork","knife","spoon","bowl",
-        "banana","apple","sandwich","orange","broccoli","carrot","hot dog","pizza",
-        "donut","cake","chair","couch","potted plant","bed","dining table","toilet",
-        "tv","laptop","mouse","remote","keyboard","cell phone","microwave","oven",
-        "toaster","sink","refrigerator","book","clock","vase","scissors","teddy bear",
-        "hair drier","toothbrush"
-    };
 
     // Private methods
     void letterbox(const cv::Mat& image, cv::Mat& out, float& scale, int& dx, int& dy);

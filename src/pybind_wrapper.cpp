@@ -79,5 +79,8 @@ PYBIND11_MODULE(yolo_onnx, m) {
             cv::Mat image = numpy_to_mat(image_np);
             cv::Mat result = self.visualize(image, detections);
             return mat_to_numpy(result);
-        }, "Visualize detections on image");
+        }, "Visualize detections on image")
+        .def_property_readonly("names", [](const YoloEngine &self) {
+            return self.class_names_;
+        });
 }
