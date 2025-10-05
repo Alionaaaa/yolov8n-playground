@@ -11,6 +11,7 @@ import numpy as np
 from ultralytics import YOLO
 
 import ocsort_module
+from utility.select_track import SelectedTrack
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -29,31 +30,34 @@ def yolo_to_ocsort_format(yolo_boxes):
         boxes.append([x1, y1, x2, y2, conf, cls])
     return np.array(boxes, dtype=np.float32)
             
-def draw_all(image, tracks, names):
-    color = (0, 255, 0)
-    thickness = 2
-    font = cv2.FONT_HERSHEY_SIMPLEX
-
+def draw_all(image, tracks, names, selected=None):
     for trk in tracks:
-
         x1, y1, x2, y2 = map(int, trk[:4])
         track_id = int(trk[4])
         class_id = int(trk[5])
         track_conf = float(trk[6])
+
         cls_name = names[class_id] if class_id in names else str(class_id)
+
+        if selected and selected.valid and np.array_equal(trk, selected.trk):
+            color = (0, 0, 255)
+            thickness = 3
+        else:
+            color = (0, 255, 0)
+            thickness = 2
 
         cv2.rectangle(image, (x1, y1), (x2, y2), color, thickness)
 
         line1 = f"ID:{track_id} Conf:{track_conf:.2f}"
         line2 = f"{cls_name}"
 
+        font = cv2.FONT_HERSHEY_SIMPLEX
         y_text = y1 - 10
         for line in [line1, line2]:
             (w, h), _ = cv2.getTextSize(line, font, 0.5, 1)
             cv2.rectangle(image, (x1, y_text - h - 2), (x1 + w + 2, y_text + 2), color, -1)
             cv2.putText(image, line, (x1 + 1, y_text), font, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
             y_text -= (h + 4)
-
     return image
 
 
@@ -109,6 +113,8 @@ def main():
     prev_time = time.time()
     avg_fps = 0.0
 
+    selected = SelectedTrack()
+
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -122,6 +128,8 @@ def main():
         tracks = tracker.update(yolo_to_ocsort_format(results[0].boxes)) 
         t2 = time.time()
 
+        selected.update_if_needed(tracks)
+
         # compute FPS and inference time
         current_time = time.time()
         fps_frame = 1.0 / (current_time - prev_time) if (current_time - prev_time) > 0 else 0
@@ -130,16 +138,24 @@ def main():
         predict_ms = (t1 - t0) * 1000
         track_ms = (t2 - t1) * 1000
         
-        info_text = f"FPS:{avg_fps:.1f} PREDICT:{predict_ms:.1f}ms TRACK:{track_ms:.1f}ms"
+        selected_id = int(selected.trk[4]) if selected.valid else -1
+        info_text = f"FPS:{avg_fps:.1f} PREDICT:{predict_ms:.1f}ms TRACK:{track_ms:.1f}ms SELECT:{selected_id} "
         print(info_text)
 
-        frame = draw_all(frame, tracks, names)
+        frame = draw_all(frame, tracks, names, selected)
         cv2.putText(frame, info_text,
                     (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
         cv2.imshow("YOLOv8n + OCSort Tracking", frame)
 
-        if cv2.waitKey(1) & 0xFF == 27:  # ESC key
+        key = cv2.waitKey(1) & 0xFF
+        if key == 27:  # ESC
             break
+        elif key == ord('a'):
+            if len(tracks) > 0:
+                selected.move(tracks, +1)
+        elif key == ord('d'):
+            if len(tracks) > 0:
+                selected.move(tracks, -1)
 
     cap.release()
     cv2.destroyAllWindows()
