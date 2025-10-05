@@ -40,10 +40,10 @@ def draw_all(image, tracks, names, selected=None):
         cls_name = names[class_id] if class_id in names else str(class_id)
 
         if selected and selected.valid and np.array_equal(trk, selected.trk):
-            color = (0, 0, 255)
+            color = (0, 0, 255)  # Red for selected track
             thickness = 3
         else:
-            color = (0, 255, 0)
+            color = (0, 255, 0)  # Green for other tracks
             thickness = 2
 
         cv2.rectangle(image, (x1, y1), (x2, y2), color, thickness)
@@ -67,19 +67,20 @@ def main():
     model = YOLO("../models/yolov8n.pt")
     names = model.names
     tracker = ocsort_module.OCSort(
-        det_thresh=0.2,      # порог уверенности детекции
-        max_age=30,          # максимальное количество кадров без обновления
-        min_hits=3,          # минимальное количество попаданий для инициализации трека
-        iou_threshold=0.3,   # порог IoU для ассоциации
+        det_thresh=0.2,      # detection confidence threshold
+        max_age=30,          # maximum frames without update
+        min_hits=3,          # minimum hits for track initialization
+        iou_threshold=0.3,   # IoU threshold for association
         delta_t=3,           # 
-        asso_func="iou",     # функция ассоциации
-        inertia=0.2,         # инерция
-        use_byte=False       # использовать ByteTrack или нет
+        asso_func="iou",     # association function
+        inertia=0.2,         # inertia
+        use_byte=False       # use ByteTrack or not
     )
+    selected = SelectedTrack()
 
     print("Model and tracker loaded. Starting inference... (press ESC to exit)")
 
-
+    # Handle image input
     if args.source.endswith(('.png', '.jpg', '.jpeg')):
         image = cv2.imread(args.source)
         if image is None:
@@ -100,27 +101,63 @@ def main():
         cv2.destroyAllWindows()
         return
         
-
-    # determine video source (camera or file)
+    # Determine video source (camera or file)
     source = int(args.source) if args.source.isdigit() else args.source
     cap = cv2.VideoCapture(source)
     if not cap.isOpened():
         raise SystemExit(f"Cannot open source: {args.source}")
 
-    # load YOLOv8n model
     
-
     prev_time = time.time()
     avg_fps = 0.0
 
-    selected = SelectedTrack()
+    mode = 1  # 1 = simple detection, 2 = selection mode
+    csrt_tracker = None
+    csrt_box = None
 
     while True:
         ret, frame = cap.read()
         if not ret:
             break
+        key = cv2.waitKey(1) & 0xFF
 
-        # run inference
+        # Switch between modes with 'w' or 's' keys
+        if key == ord('w') or key == ord('s'):
+            if mode == 1:
+                mode = 2
+            else:
+                mode = 1
+                # Reset selected track when switching to mode 1
+                selected.trk = None
+                selected.index = -1
+                selected.valid = False
+            csrt_tracker = None
+
+        # Spacebar to start/stop CSRT tracking
+        if key == ord(' ') and selected.valid:
+            if csrt_tracker is None:
+                x1, y1, x2, y2 = map(int, selected.trk[:4])
+                csrt_tracker = cv2.TrackerCSRT_create()
+                csrt_tracker.init(frame, (x1, y1, x2 - x1, y2 - y1))
+                csrt_box = (x1, y1, x2 - x1, y2 - y1)
+            else:
+                csrt_tracker = None
+                csrt_box = None
+
+        # Update CSRT tracker if active
+        if csrt_tracker:
+            ok, csrt_box = csrt_tracker.update(frame)
+            if ok:
+                x, y, w, h = map(int, csrt_box)
+                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255), 3)
+            else:
+                # Lost tracking of object
+                csrt_tracker = None
+                mode = 2
+            cv2.imshow("YOLO + OCSort + CSRT", frame)
+            continue
+
+        # Run inference
         t0 = time.time()
         results = model.predict(frame, imgsz=640, conf=0.4, device="cpu", verbose=True)
         t1 = time.time()
@@ -128,9 +165,17 @@ def main():
         tracks = tracker.update(yolo_to_ocsort_format(results[0].boxes)) 
         t2 = time.time()
 
-        selected.update_if_needed(tracks)
+        # Handle track selection in mode 2
+        if mode == 2:
+            selected.update_if_needed(tracks)
+            if key == ord('a'):
+                selected.move(tracks, -1)  # Previous track
+            elif key == ord('d'):
+                selected.move(tracks, +1)  # Next track
 
-        # compute FPS and inference time
+        frame = draw_all(frame, tracks, names, selected if mode == 2 else None)
+
+        # Compute FPS and inference time
         current_time = time.time()
         fps_frame = 1.0 / (current_time - prev_time) if (current_time - prev_time) > 0 else 0
         prev_time = current_time
@@ -139,23 +184,19 @@ def main():
         track_ms = (t2 - t1) * 1000
         
         selected_id = int(selected.trk[4]) if selected.valid else -1
-        info_text = f"FPS:{avg_fps:.1f} PREDICT:{predict_ms:.1f}ms TRACK:{track_ms:.1f}ms SELECT:{selected_id} "
+        info_text = f"FPS:{avg_fps:.1f} PREDICT:{predict_ms:.1f}ms TRACK:{track_ms:.1f}ms"
+        mode_text = f"MODE:{mode} SELECT:{selected_id} "
         print(info_text)
 
-        frame = draw_all(frame, tracks, names, selected)
+        # Display info text
         cv2.putText(frame, info_text,
                     (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-        cv2.imshow("YOLOv8n + OCSort Tracking", frame)
+        cv2.putText(frame, mode_text,
+                    (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        cv2.imshow("YOLO + OCSort + CSRT", frame)
 
-        key = cv2.waitKey(1) & 0xFF
-        if key == 27:  # ESC
+        if key == 27:  # ESC key to exit
             break
-        elif key == ord('a'):
-            if len(tracks) > 0:
-                selected.move(tracks, +1)
-        elif key == ord('d'):
-            if len(tracks) > 0:
-                selected.move(tracks, -1)
 
     cap.release()
     cv2.destroyAllWindows()
