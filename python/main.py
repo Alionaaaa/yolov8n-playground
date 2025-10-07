@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-  python3 main.py --source 0 --multi-tracker ocsort --single-tracker csrt
-  python3 main.py --source 0 --multi-tracker nanotrack --single-tracker vit
+  python3 main.py --source 0 --single-tracker csrt
+  python3 main.py --source 0 --single-tracker nanotrack
+  python3 main.py --source 0 --single-tracker vit
 """
 
 import argparse
@@ -17,10 +18,10 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--source', type=str, default='../media/test.png')
     parser.add_argument('--multi-tracker', type=str, default='ocsort', 
-                       choices=['ocsort', 'nanotrack'],
+                       choices=['ocsort'],
                        help='Multi-object tracker type')
     parser.add_argument('--single-tracker', type=str, default='csrt',
-                       choices=['csrt', 'vit'],
+                       choices=['csrt', 'nanotrack', 'vit'],
                        help='Single-object tracker type')
     return parser.parse_args()
 
@@ -49,28 +50,35 @@ def create_multi_tracker(tracker_type):
             inertia=0.2,
             use_byte=False
         )
-    elif tracker_type == 'nanotrack':
-        try:
-            tracker = cv2.TrackerNano.create()
-            print("Using OpenCV NanoTracker")
-            return tracker
-        except:
-            print("NanoTrack not available, falling back to OCSort")
-            return ocsort_module.OCSort(
-                det_thresh=0.2, max_age=30, min_hits=3, iou_threshold=0.3
-            )
-                
 
 def create_single_tracker(tracker_type):
     """Create single-object tracker"""
     if tracker_type == 'csrt':
+        print("Using OpenCV CSRT as single-object tracker")
         return cv2.TrackerCSRT_create()
+    elif tracker_type == 'nanotrack':
+        try:
+            params = cv2.TrackerNano_Params()
+            params.backbone = '../models/nanotrack_backbone_sim.onnx'
+            params.neckhead = '../models/nanotrack_head_sim.onnx'
+            tracker = cv2.TrackerNano_create(params)
+            print("Using OpenCV NanoTracker as single-object tracker")
+            return tracker
+        except Exception as e:
+            print("NanoTrack not available", e)
+            return None
     elif tracker_type == 'vit':
         try:
-            return cv2.TrackerVit.create()
-        except:
-            print("VitTracker not available, falling back to CSRT")
-            return cv2.TrackerCSRT_create()
+            params = cv2.TrackerVit_Params()
+            params.net = '../models/object_tracking_vittrack_2023sep.onnx'
+            tracker = cv2.TrackerVit_create(params)
+            print("Using OpenCV VitTracker as single-object tracker")
+            return tracker
+        except Exception as e:
+            print("VitTracker not available:", e)
+            return None
+    
+
             
 def draw_all(image, tracks, names, selected=None):
     for trk in tracks:
@@ -222,7 +230,7 @@ def main():
         selected_id = int(selected.trk[4]) if selected.valid else -1
         info_text = f"FPS:{avg_fps:.1f} PREDICT:{predict_ms:.1f}ms TRACK:{track_ms:.1f}ms"
         mode_text = f"MODE:{mode} SELECT:{selected_id} MULTI:{args.multi_tracker} SINGLE:{args.single_tracker}"
-        print(info_text)
+        # print(info_text)
 
         # Display info text
         cv2.putText(frame, info_text,
