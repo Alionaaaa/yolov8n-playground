@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-  python3 main.py --source 0
-  python3 main.py --source ../media/test.mp4
+  python3 main.py --source 0 --multi-tracker ocsort --single-tracker csrt
+  python3 main.py --source 0 --multi-tracker nanotrack --single-tracker vit
 """
 
 import argparse
@@ -16,10 +16,16 @@ from utility.select_track import SelectedTrack
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--source', type=str, default='../media/test.png')
+    parser.add_argument('--multi-tracker', type=str, default='ocsort', 
+                       choices=['ocsort', 'nanotrack'],
+                       help='Multi-object tracker type')
+    parser.add_argument('--single-tracker', type=str, default='csrt',
+                       choices=['csrt', 'vit'],
+                       help='Single-object tracker type')
     return parser.parse_args()
 
-def yolo_to_ocsort_format(yolo_boxes):
-    """Convert YOLOv8 boxes to OCSort format: [x1, y1, x2, y2, confidence, class]."""
+def yolo_to_tracker_format(yolo_boxes):
+    """Convert YOLOv8 boxes to tracker format: [x1, y1, x2, y2, confidence, class]."""
     if len(yolo_boxes) == 0:
         return np.empty((0, 6), dtype=np.float32)
     boxes = []
@@ -29,6 +35,42 @@ def yolo_to_ocsort_format(yolo_boxes):
         cls = float(box.cls[0].cpu().numpy())
         boxes.append([x1, y1, x2, y2, conf, cls])
     return np.array(boxes, dtype=np.float32)
+
+def create_multi_tracker(tracker_type):
+    """Create multi-object tracker"""
+    if tracker_type == 'ocsort':
+        return ocsort_module.OCSort(
+            det_thresh=0.2,
+            max_age=30,
+            min_hits=3,
+            iou_threshold=0.3,
+            delta_t=3,
+            asso_func="iou",
+            inertia=0.2,
+            use_byte=False
+        )
+    elif tracker_type == 'nanotrack':
+        try:
+            tracker = cv2.TrackerNano.create()
+            print("Using OpenCV NanoTracker")
+            return tracker
+        except:
+            print("NanoTrack not available, falling back to OCSort")
+            return ocsort_module.OCSort(
+                det_thresh=0.2, max_age=30, min_hits=3, iou_threshold=0.3
+            )
+                
+
+def create_single_tracker(tracker_type):
+    """Create single-object tracker"""
+    if tracker_type == 'csrt':
+        return cv2.TrackerCSRT_create()
+    elif tracker_type == 'vit':
+        try:
+            return cv2.TrackerVit.create()
+        except:
+            print("VitTracker not available, falling back to CSRT")
+            return cv2.TrackerCSRT_create()
             
 def draw_all(image, tracks, names, selected=None):
     for trk in tracks:
@@ -66,19 +108,12 @@ def main():
 
     model = YOLO("../models/yolov8n.pt")
     names = model.names
-    tracker = ocsort_module.OCSort(
-        det_thresh=0.2,      # detection confidence threshold
-        max_age=30,          # maximum frames without update
-        min_hits=3,          # minimum hits for track initialization
-        iou_threshold=0.3,   # IoU threshold for association
-        delta_t=3,           # 
-        asso_func="iou",     # association function
-        inertia=0.2,         # inertia
-        use_byte=False       # use ByteTrack or not
-    )
+    
+    multi_tracker = create_multi_tracker(args.multi_tracker)
     selected = SelectedTrack()
 
-    print("Model and tracker loaded. Starting inference... (press ESC to exit)")
+    print(f"Model and trackers loaded. Multi: {args.multi_tracker}, Single: {args.single_tracker}")
+    print("Starting inference... (press ESC to exit)")
 
     # Handle image input
     if args.source.endswith(('.png', '.jpg', '.jpeg')):
@@ -90,10 +125,11 @@ def main():
         results = model.predict(image, imgsz=640, conf=0.6, device="cpu", verbose=True)
         t1 = time.time()
         
-        tracks = tracker.update(yolo_to_ocsort_format(results[0].boxes))
+        tracks = multi_tracker.update(yolo_to_tracker_format(results[0].boxes))
         t2 = time.time()
 
         print(f"PREDICT: {((t1 - t0) * 1000):.1f}ms, Objects: {len(results[0].boxes)}, Tracks: {len(tracks)}")
+        print(f"Tracker: {args.multi_tracker}")
 
         image = draw_all(image, tracks, names)
         cv2.imshow("YOLOv8n Inference", image)
@@ -112,8 +148,8 @@ def main():
     avg_fps = 0.0
 
     mode = 1  # 1 = simple detection, 2 = selection mode
-    csrt_tracker = None
-    csrt_box = None
+    single_tracker = None
+    single_box = None
 
     while True:
         ret, frame = cap.read()
@@ -131,30 +167,30 @@ def main():
                 selected.trk = None
                 selected.index = -1
                 selected.valid = False
-            csrt_tracker = None
+            single_tracker = None
 
-        # Spacebar to start/stop CSRT tracking
+        # Spacebar to start/stop single object tracking
         if key == ord(' ') and selected.valid:
-            if csrt_tracker is None:
+            if single_tracker is None:
                 x1, y1, x2, y2 = map(int, selected.trk[:4])
-                csrt_tracker = cv2.TrackerCSRT_create()
-                csrt_tracker.init(frame, (x1, y1, x2 - x1, y2 - y1))
-                csrt_box = (x1, y1, x2 - x1, y2 - y1)
+                single_tracker = create_single_tracker(args.single_tracker)
+                single_tracker.init(frame, (x1, y1, x2 - x1, y2 - y1))
+                single_box = (x1, y1, x2 - x1, y2 - y1)
             else:
-                csrt_tracker = None
-                csrt_box = None
+                single_tracker = None
+                single_box = None
 
-        # Update CSRT tracker if active
-        if csrt_tracker:
-            ok, csrt_box = csrt_tracker.update(frame)
+        # Update single tracker if active
+        if single_tracker:
+            ok, single_box = single_tracker.update(frame)
             if ok:
-                x, y, w, h = map(int, csrt_box)
+                x, y, w, h = map(int, single_box)
                 cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255), 3)
             else:
                 # Lost tracking of object
-                csrt_tracker = None
+                single_tracker = None
                 mode = 2
-            cv2.imshow("YOLO + OCSort + CSRT", frame)
+            cv2.imshow(f"YOLO + {args.multi_tracker} + {args.single_tracker}", frame)
             continue
 
         # Run inference
@@ -162,7 +198,7 @@ def main():
         results = model.predict(frame, imgsz=640, conf=0.4, device="cpu", verbose=True)
         t1 = time.time()
 
-        tracks = tracker.update(yolo_to_ocsort_format(results[0].boxes)) 
+        tracks = multi_tracker.update(yolo_to_tracker_format(results[0].boxes)) 
         t2 = time.time()
 
         # Handle track selection in mode 2
@@ -185,15 +221,15 @@ def main():
         
         selected_id = int(selected.trk[4]) if selected.valid else -1
         info_text = f"FPS:{avg_fps:.1f} PREDICT:{predict_ms:.1f}ms TRACK:{track_ms:.1f}ms"
-        mode_text = f"MODE:{mode} SELECT:{selected_id} "
+        mode_text = f"MODE:{mode} SELECT:{selected_id} MULTI:{args.multi_tracker} SINGLE:{args.single_tracker}"
         print(info_text)
 
         # Display info text
         cv2.putText(frame, info_text,
-                    (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                    (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
         cv2.putText(frame, mode_text,
-                    (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-        cv2.imshow("YOLO + OCSort + CSRT", frame)
+                    (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+        cv2.imshow(f"YOLO + {args.multi_tracker} + {args.single_tracker}", frame)
 
         if key == 27:  # ESC key to exit
             break
